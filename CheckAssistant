@@ -1,0 +1,401 @@
+#+-----------------------------------------------------
+#
+# 
+# 
+#
+# File: CheckAssitant.PS1
+#
+# Note:
+#
+# Author: NGusev 25.03.2021
+#
+#------------------------------------------------------
+
+Import-Module ActiveDirectory;
+Clear-Host;
+
+$GLOBAL:ERRORACTIONPREFERENCE = 0;
+$GLOBAL:FIRSTWARN = $TRUE;
+$NL = [System.Environment]::NewLine;
+$L = "______________________________________________________________________________________________________________________";
+$MessageWarn = "Внимание!" + $NL + $NL + "Процесс сбора информации о всех пользователях может быть долгим, а это окно перестанет реагировать на запросы." + $NL + "Просто дождитесь окончания процесса." + $NL + $NL + "Нажмите OK для продолжения.";
+
+Function Warn{if($FIRSTWARN){[System.Windows.Forms.MessageBox]::Show($MessageWarn,"Предупреждение");$GLOBAL:FIRSTWARN = $FALSE}}
+Function AllUserInGroup ($a){
+    Warn;
+
+    $g = Get-ADGroup -Filter {cn -eq $a} -Property *;
+
+    if ($g){
+        $Users = Get-ADUser -Filter {(memberof -recursivematch $g.distinguishedname)-and(enabled  -eq  'true')} -Properties Enabled, AccountExpirationDate, Name, Company, department, title, ExtensionAttribute1, userPrincipalName |
+                    Where-Object{(get-date) -lt $_.AccountExpirationDate-or ($NULL -eq $_.AccountExpirationDate) }|
+                    Select-Object @{Label = "Сотрудник"; Expression = {$_.Name}},
+                                  @{Label = "Организация"; Expression = {$_.Company}},
+                                  @{Label = "Подразделение"; Expression = {$_.department}},
+                                  @{Label = "Должность"; Expression = {$_.title}},
+                                  @{Label = "Логин"; Expression = {$_.userPrincipalName}},
+                                  @{Label = "Засветился на:"; Expression = {$_.ExtensionAttribute1}}|
+                    Sort-Object name;
+
+        $K = $K + ($Users).count;
+    }
+
+    if ($k -eq 0) {$objTextBox3.Text =  $NL + "В группе $a [" + (Get-ADGroup -filter {cn -eq $a} -Properties description).description + "] нет активных пользователей"+$NL+$L+$objTextBox3.Text+$NL}
+    else{
+        $Users|Out-GridView;
+
+        $Users = Get-ADUser -Filter {(memberof -recursivematch $g.distinguishedname)-and(enabled  -eq  'true')} -Properties Enabled,AccountExpirationDate,Name,sAMAccountName |
+                    Where-Object{(get-date) -lt $_.AccountExpirationDate-or$NULL -eq $_.AccountExpirationDate}|
+                    Select-Object name, sAMAccountName |
+                    Sort-Object name;
+        $i=1;
+        Foreach ($User in $Users){$GroupUsers=$GroupUsers+"$i)   "+$User.name +"    (ppl\" + $User.sAMAccountName + ")" + $NL;$i++}
+        $objTextBox3.Text = $NL + 'Всего пользователей в группе "'+$a+'"'+" [" + (Get-ADGroup -filter {cn -eq $a} -Properties description).description + "] - "+$K+":"+$NL+$GroupUsers+$NL+$NL+$L+$objTextBox3.Text+$NL;
+    }
+
+    $a=$g=$Users=$k=$GroupUsers=$User=$i=$null;
+}
+Function UserGroups{
+    param([Parameter(Position = 0, ParameterSetName = "Value", Mandatory = $TRUE)][String]$CN);
+
+    function GetGroups($CheckGroup, $Depth){
+        $GMembers = (Get-AdGroup $CheckGroup -properties memberOf,description).memberOf;
+
+        if($GMembers.count -gt 0){
+            $GMembers = $GMembers|Sort-Object;
+            $Depth = $Depth + "   ";
+            $Description = $null;
+
+            foreach($GMember in $GMembers){
+                $GroupName = (Get-AdGroup $GMember).name;
+                $Description = $null;
+                $Description = (Get-adGroup $GMember).description;
+                if ($Description){$Description = " !["+$Description+"]!" -replace "@{description=","" -replace "}","";$Depth + $GroupName + $Description + $NL}
+                else{$Depth + $GroupName + $NL}
+                GetGroups $GMember $Depth;
+            }
+        }
+    }
+    $Groups = (Get-AdUser -Filter {(cn -eq $CN) -or (sAMAccountName -eq $CN)} -Properties MemberOf |
+    Select-Object MemberOf).memberOf |
+    Get-AdGroup -properties memberOf ,description |
+    Sort-Object name;
+
+    foreach($Group in $Groups){
+        if ($null -ne $Group.description){$Group.Name + " ["+$Group.description+"]"+$NL;GetGroups $Group $Depth}
+        else{$Group.Name + $NL;GetGroups $Group $Depth}
+    }
+}
+
+Write-host "Загрузка, пожалуйста, подождите..."
+
+$Users = Get-ADUser -filter {(enabled -eq "true")} -Properties CN, sAMAccountName | Where-Object{((get-date) -lt $_.AccountExpirationDate-or$_.AccountExpirationDate -eq $NULL)} | Select-Object CN,sAMAccountName | Sort-Object CN; 
+$Computers = Get-ADComputer -Filter * -Properties CN | Select-Object CN | Sort-Object CN;
+$Groups = Get-ADGroup -filter * | Select-Object name | Sort-Object name;
+
+Add-Type -assembly System.Windows.Forms;
+$main_form = New-Object System.Windows.Forms.Form;
+$main_form.Text = 'Check assistant';
+$main_form.Width = 1290;
+$main_form.Height = 700;
+$main_form.SizeGripStyle = [System.Windows.Forms.SizeGripStyle]::Hide;
+$main_form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::Fixed3D;
+
+##################### БЛОК РАБОТЫ С КОМПЬЮТЕРАМИ 
+$Label8 = New-Object System.Windows.Forms.Label;
+$Label8.Text = "      проверки  компьютеров $NL                        \/$NL                        \/$NL                        \/";
+$Label8.Location = New-Object System.Drawing.Point(1050,485);
+$Label8.AutoSize = $true;
+$main_form.Controls.Add($Label8);
+$Label7 = New-Object System.Windows.Forms.Label;
+$Label7.Text = 'ВЫБЕРИТЕ компьютер из выпадающего списка:';
+$Label7.Location = New-Object System.Drawing.Point(1010,555);
+$Label7.AutoSize = $true;
+$main_form.Controls.Add($Label7);
+$ComputersList = New-Object System.Windows.Forms.ComboBox;
+$ComputersList.Width = 250;
+Foreach ($Computer in $Computers){$ComputersList.Items.Add($Computer.cn) |Out-Null}
+$ComputersList.Location = New-Object System.Drawing.Point(1010,575);
+$main_form.Controls.Add($ComputersList);
+$ButtonForGetInformationsPC = New-Object System.Windows.Forms.Button;
+$ButtonForGetInformationsPC.Location = New-Object System.Drawing.Size(1010,600);
+$ButtonForGetInformationsPC.Size = New-Object System.Drawing.Size(250,23);
+$ButtonForGetInformationsPC.Text = "Получить общую информацию о компьютере";
+$main_form.Controls.Add($ButtonForGetInformationsPC);
+$ButtonForRestartPC = New-Object System.Windows.Forms.Button;
+$ButtonForRestartPC.Location = New-Object System.Drawing.Size(1010,625);
+$ButtonForRestartPC.Size = New-Object System.Drawing.Size(250,23);
+$ButtonForRestartPC.Text = "Перезагрузить компьютер";
+$main_form.Controls.Add($ButtonForRestartPC);
+
+##################### БЛОК РАБОТЫ С ГРУППАМИ 
+$Label6 = New-Object System.Windows.Forms.Label;
+$Label6.Text = '< < <проверки групп доступа';
+$Label6.Location = New-Object System.Drawing.Point(255,45);
+$Label6.AutoSize = $true;
+$main_form.Controls.Add($Label6);
+$Label4 = New-Object System.Windows.Forms.Label;
+$Label4.Text = 'ВЫБЕРИТЕ группу из выпадающего списка:';
+$Label4.Location = New-Object System.Drawing.Point(2,10);
+$Label4.AutoSize = $true;
+$main_form.Controls.Add($Label4);
+$ButtonForGetAllUsersInSelectedGroup = New-Object System.Windows.Forms.Button;
+$ButtonForGetAllUsersInSelectedGroup.Location = New-Object System.Drawing.Size(2,55);
+$ButtonForGetAllUsersInSelectedGroup.Size = New-Object System.Drawing.Size(250,23);
+$ButtonForGetAllUsersInSelectedGroup.Text = "Вывести всех пользователей группы";
+$main_form.Controls.Add($ButtonForGetAllUsersInSelectedGroup);
+$GroupsList = New-Object System.Windows.Forms.ComboBox;
+$GroupsList.Width = 250;
+Foreach ($Group in $Groups){$GroupsList.Items.Add($Group.name) | Out-Null}
+$GroupsList.Location = New-Object System.Drawing.Point(2,30);
+$main_form.Controls.Add($GroupsList);
+
+##################### БЛОК ТЕКСТОВОГО ПОЛЯ 
+$objTextBox3 = New-Object System.Windows.Forms.TextBox;
+$objTextBox3.Multiline = $True;
+$objTextBox3.Location = New-Object System.Drawing.Size(260,65);
+$objTextBox3.Size = New-Object System.Drawing.Size(740,600);
+$objTextBox3.Scrollbars = "Vertical";
+$objTextBox3.Text = "";
+$main_form.Controls.Add($objTextBox3);
+$ButtonForClearTextBox = New-Object System.Windows.Forms.Button;
+$ButtonForClearTextBox.Location = New-Object System.Drawing.Size(490,40);
+$ButtonForClearTextBox.Size = New-Object System.Drawing.Size(250,23);
+$ButtonForClearTextBox.Text = "Очистить текстовое поле";
+$main_form.Controls.Add($ButtonForClearTextBox);
+
+##################### БЛОК РАБОТЫ С У/З
+$Label5 = New-Object System.Windows.Forms.Label;
+$Label5.Text = 'проверки учётных записей> > >';
+$Label5.Location = New-Object System.Drawing.Point(822,45);
+$Label5.AutoSize = $true;
+$main_form.Controls.Add($Label5);
+$Label = New-Object System.Windows.Forms.Label;
+$Label.Text = 'ВЫБЕРИТЕ пользователя из выпадающего списка:';
+$Label.Location = New-Object System.Drawing.Point(985,10);
+$Label.AutoSize = $true;
+$main_form.Controls.Add($Label);
+$UsersList = New-Object System.Windows.Forms.ComboBox;
+$UsersList.Width = 250;
+Foreach ($User in $Users){$UsersList.Items.Add($User.CN) | Out-Null}&Clear-Host;
+Foreach ($User in $Users){$UsersList.Items.Add($User.sAMAccountName) | Out-Null}&Clear-Host;
+$UsersList.Location = New-Object System.Drawing.Point(1010,30);
+$main_form.Controls.Add($UsersList);
+$ButtonForGetUserInformations = New-Object System.Windows.Forms.Button;
+$ButtonForGetUserInformations.Location = New-Object System.Drawing.Size(1010,55);
+$ButtonForGetUserInformations.Size = New-Object System.Drawing.Size(250,23);
+$ButtonForGetUserInformations.Text = "Получить общую информацию о пользователе";
+$main_form.Controls.Add($ButtonForGetUserInformations);
+$ButtonForGetAllUsersInDomain = New-Object System.Windows.Forms.Button;
+$ButtonForGetAllUsersInDomain.Location = New-Object System.Drawing.Size(1010,105);
+$ButtonForGetAllUsersInDomain.Size = New-Object System.Drawing.Size(250,23);
+$ButtonForGetAllUsersInDomain.Text = "Показать все активные аккаунты домена";
+$main_form.Controls.Add($ButtonForGetAllUsersInDomain);
+$ButtonCheckUserInGroup = New-Object System.Windows.Forms.Button;
+$ButtonCheckUserInGroup.Location = New-Object System.Drawing.Size(1010,80);
+$ButtonCheckUserInGroup.Size = New-Object System.Drawing.Size(250,23);
+$ButtonCheckUserInGroup.Text = "Проверить членство в выбранной группе";
+$main_form.Controls.Add($ButtonCheckUserInGroup);
+$Label9 = New-Object System.Windows.Forms.Label;
+$Label9.Text = 'Дата  с:';
+$Label9.Location = New-Object System.Drawing.Point(1010,172);
+$Label9.AutoSize = $true;
+$main_form.Controls.Add($Label9);
+$DateTimePicker = New-Object System.Windows.Forms.DateTimePicker;
+$DateTimePicker.Location  = New-Object System.Drawing.Point(1065,170);
+$DateTimePicker.Size = New-Object System.Drawing.Size(195,23);
+$main_form.Controls.add($DateTimePicker);
+$Label10 = New-Object System.Windows.Forms.Label;
+$Label10.Text = 'Дата по:';
+$Label10.Location = New-Object System.Drawing.Point(1010,197);
+$Label10.AutoSize = $true;
+$main_form.Controls.Add($Label10);
+$DateTimePicker1 = New-Object System.Windows.Forms.DateTimePicker;
+$DateTimePicker1.Location  = New-Object System.Drawing.Point(1065,195);
+$DateTimePicker1.Size = New-Object System.Drawing.Size(195,23);
+$main_form.Controls.add($DateTimePicker1);
+$ButtonCheckNewAcc = New-Object System.Windows.Forms.Button;
+$ButtonCheckNewAcc.Location = New-Object System.Drawing.Size(1010,220);
+$ButtonCheckNewAcc.Size = New-Object System.Drawing.Size(250,23);
+$ButtonCheckNewAcc.Text = "Проверить новые аккаунты";
+$main_form.Controls.Add($ButtonCheckNewAcc);
+$ButtonCheckNewPC = New-Object System.Windows.Forms.Button;
+$ButtonCheckNewPc.Location = New-Object System.Drawing.Size(1010,245);
+$ButtonCheckNewPc.Size = New-Object System.Drawing.Size(250,23);
+$ButtonCheckNewPc.Text = "Проверить новые компьютеры";
+$main_form.Controls.Add($ButtonCheckNewPc);
+
+##################### БЛОК ОБРАБОТКИ СОБЫТИЙ
+$ButtonForGetUserInformations.Add_Click({ #Получить общую информацию о пользователе 
+    if ($UsersList.Text){
+        $uName = $UsersList.Text
+        if (Get-ADUser -filter {(CN -eq $uName) -or (sAMAccountName -eq $uName)} -Properties cn){
+            $UserInformation = Get-ADUser -Filter{(CN  -eq  $uName) -or (sAMAccountName -eq $uName)} -Properties CanonicalName, name,department,sAMAccountName,Company,ExtensionAttribute1,WhenCreated,title |
+                                                                                                   Select-Object CanonicalName, name,sAMAccountName,Company,department,title, ExtensionAttribute1,WhenCreated;
+
+            $objTextBox3.Text = $NL +  "Логин: "+ $UserInformation.sAMAccountName +
+                                $NL + "ФИО: " + $UserInformation.Name +
+                                $NL + "УО: " + $UserInformation.Company +
+                                $NL + "Подразделение: " + $UserInformation.department +
+                                $NL + "Должность: " + $UserInformation.Title +
+                                $NL + "Аккаунт создан: " + $UserInformation.WhenCreated +
+                                $NL + "Находится в контейнере: " +$UserInformation.CanonicalName +
+                                $NL + "Засветился на: " + $UserInformation.ExtensionAttribute1 +
+                                $NL +
+                                $NL + "Группы в AD (без учёта Domain Users):" +
+                                $NL + (UserGroups ($uName)) +
+                                $NL+$L+$objTextBox3.Text+$NL;
+        }
+        else{$objTextBox3.Text = $NL + 'Пользователь "' + $UsersList.Text + '" не найден, проверьте корректность введённых данных...' + $NL + $L + $objTextBox3.Text + $NL}
+    }
+    else{$objTextBox3.Text = $NL + "Необходимо выбрать пользователя из выпадающего списка или набрать его вручную..." + $NL + $L + $objTextBox3.Text + $NL} 
+    
+    $uName=$UserInformation=$null;
+}); #Получить общую информацию о пользователе
+
+$ButtonForGetAllUsersInSelectedGroup.Add_Click({ #Вывести всех пользователей группы 
+    if ($GroupsList.Text){
+        if (Get-ADGroup -Filter {cn -eq $GroupsList.Text} -Properties cn|Select-Object cn){AllUserInGroup $GroupsList.Text}
+        else{$objTextBox3.Text = $NL + 'Группы "' + $GroupsList.Text + '" не найдено, проверьте корректность введённых данных...' + $NL + $L + $objTextBox3.Text + $NL}
+    } 
+    else{$objTextBox3.Text = $NL + "Необходимо выбрать группу из выпадающего списка или набрать его вручную..."+$NL+$L+$objTextBox3.Text+$NL}
+}); #Вывести всех пользователей группы
+
+$ButtonForGetAllUsersInDomain.Add_Click({ #Показать все активные аккаунты домена 
+    Warn;
+    $AllUsers = Get-ADUser -Filter {Enabled -eq $TRUE} -Properties Enabled, AccountExpirationDate, Name, sAMAccountName, LastLogonDate, Company, department, ExtensionAttribute1, title, CanonicalName  -SearchBase "DC=PPL, DC=LOC" |
+        Where-Object {((get-date) -lt $_.AccountExpirationDate -or $_.AccountExpirationDate -eq $NULL) } |
+        Select-Object @{Label = "Name"; Expression = {$_.Name}},
+                      @{Label = "SAM name"; Expression = {$_.sAMAccountName}},
+                      @{Label = "Last logon date"; Expression = {$_.LastLogonDate}},
+                      @{Label = "Засветился на"; Expression = {$_.ExtensionAttribute1}},
+                      @{Label = "Организация"; Expression = {$_.Company}},
+                      @{Label = "Подразделение"; Expression = {$_.Department}},
+                      @{Label = "Должность"; Expression = {$_.Title}},
+                      @{Label = "CanonicalName"; Expression = {$_.CanonicalName}} |
+        Sort-Object name;
+
+    $objTextBox3.Text = $NL + "Всего учётных записей в домене: " + $AllUsers.count + $NL + $L + $objTextBox3.Text + $NL;
+    $AllUsers | Out-GridView;
+
+    $AllUsers = $null;
+}); #Показать все активные аккаунты домена
+
+$ButtonForGetInformationsPC.Add_Click({ #Получить общую информацию о компьютере 
+    if ($ComputersList.text){
+        $ComputerName = $ComputersList.text;
+        $ComputerTest = Get-ADComputer $ComputerName -Properties CN;
+        if ($ComputerTest){        
+            $ComputerProperty = Get-ADComputer -Filter {CN -eq $ComputerName} -Properties *;
+            if (!$ComputerProperty.OperatingSystem){$ComputerProperty.OperatingSystem = "неизвестна"} 
+            if (Test-Connection $ComputerName -Count 1 -Quiet:$true){ 
+                $ComputerIP=[System.Net.Dns]::GetHostAddresses($ComputerName);
+                $HostName = Get-WmiObject Win32_ComputerSystem –Computer $ComputerName;
+                $UserName = $HostName.UserName;
+                $UserName1 = $UserName -replace 'ppl\\','';
+                $UserInformation = Get-ADUser -Filter {(sAMAccountName  -eq  $UserName1)} -Properties Name, Company, Department, Title, ExtensionAttribute1, WhenCreated |
+                                                                                        Select-Object Name, Company, Department, Title, ExtensionAttribute1, WhenCreated;
+                $ComputerActiveStatus = "в сети, его IP-адрес: $ComputerIP" + $NL +
+                                        $NL +
+                                        "На компьютере работает: " + $UserName + "   " + $UserInformation.Name + $NL +
+                                        "УО: " +  $UserInformation.Company + $NL +
+                                        "Подразделение: " + $UserInformation.Department + $NL +
+                                        "Должность: " + $UserInformation.Title + $NL +
+                                        "Аккаунт создан: " + $UserInformation.WhenCreated + $NL +
+                                        "Засветился на: " + $UserInformation.ExtensionAttribute1 + $NL;
+            }
+            else{$ComputerActiveStatus = "не в сети"} 
+            $objTextBox3.Text = $NL +
+                                "Полное имя компьютера: " + $ComputerProperty.DNSHostName + "  (введён в домен: "+$ComputerProperty.WhenCreated+")" +
+                                $NL +
+                                $NL +
+                                "Установлена операционная система: " + $ComputerProperty.OperatingSystem+
+                                $NL +
+                                "Последний раз авторизовывался в домене: " + $ComputerProperty.LastLogonDate +
+                                $NL +
+                                "Находится в каталоге: " + $ComputerProperty.CanonicalName +
+                                $NL +
+                                $NL +
+                                "Сейчас компьютер " + $ComputerActiveStatus +
+                                $NL+$L+$objTextBox3.Text+$NL;
+        }
+        else{$objTextBox3.Text = 'Компьютера с именем "' + $ComputerName + '"не найдено...' + $NL + $L + $objTextBox3.Text + $NL} 
+    } 
+    else{$objTextBox3.Text = "Необходимо выбрать компьютер из выпадающего списка или набрать вручную..." + $NL + $L + $objTextBox3.Text + $NL}
+
+    $ComputerName = $ComputerTest = $ComputerProperty = $ComputerIP = $HostName = $UserName = $UserName1 = $UserInformation = $ComputerActiveStatus=$null;
+}); #Получить общую информацию о компьютере
+
+$ButtonForRestartPC.Add_Click({ #Перезагрузить компьютер 
+    if ($ComputersList.selectedItem){ 
+        $ComputerName = $ComputersList.selectedItem;
+
+        if (Test-Connection $ComputerName -Count 1 -Quiet:$true){Restart-Computer -ComputerName $ComputerName -Force;$objTextBox3.Text = $NL + "Компьютер отправлен на перезагрузку" + $NL + $L + $objTextBox3.Text + $NL} 
+        else{$objTextBox3.Text = $NL + "Компьютер не в сети или недоступен, попробуйте позже." + $NL + $L + $objTextBox3.Text + $NL} 
+    } 
+    else{$objTextBox3.Text = $NL + "Необходимо ВЫБРАТЬ комьпютер из выпадающего списка..." + $NL + $L + $objTextBox3.Text + $NL}
+
+    $ComputerName=$null;
+}) #Перезагрузить компьютер
+
+$ButtonForClearTextBox.Add_Click({$objTextBox3.Text = ""}); #Очистить текстовое поле
+
+$ButtonCheckUserInGroup.Add_Click({ #Проверить членство в выбранной группе 
+    if ($UsersList.Text){
+        if (Get-ADUser -Filter {(Cn -eq $UsersList.Text) -or (sAMAccountName -eq $UsersList.Text)} -Properties Cn){
+            if ($GroupsList.Text){
+                $GroupTest = Get-ADGroup -Filter {Cn -eq $GroupsList.Text} -Properties Cn | Select-Object Cn;
+                if ($GroupTest){
+                    $UName = $UsersList.text;
+                    $Result = $null;
+                    $g = Get-ADGroup -Filter {Cn -eq $GroupsList.Text}
+                    $Result = Get-ADUser -Filter{(Enabled -eq $TRUE) -and (memberof -Recursivematch $g.distinguishedname) -and ((CN -eq $UName) -or (sAMAccountName -eq $UName))} -Properties Name | Select-Object Name;
+                    if ($Result){$objTextBox3.Text = $NL + 'Пользователь "' + $Uname + '" входит в группу "' + $GroupsList.Text + '"' + $NL + $L + $objTextBox3.Text + $NL} 
+                    else{$objTextBox3.Text = $NL + 'Пользователь "'+ $Uname +'" НЕ входит в группу "'+ $GroupsList.Text + '"' + $NL + $L + $objTextBox3.Text + $NL}
+                }
+                else{$objTextBox3.Text = $NL + 'Группа "' + $GroupsList.Text + '" не найдена, проверьте корректность введённых данных...' + $NL + $L + $objTextBox3.Text + $NL}
+            } 
+            else{$objTextBox3.Text = $NL + "Необходимо выбрать группу из выпадающего списка или набрать её вручную..." + $NL + $L + $objTextBox3.Text + $NL}
+        }
+        else{$objTextBox3.Text = $NL + 'Пользователь "' + $UsersList.Text + '" не найден, проверьте корректность введённых данных...' + $NL + $L + $objTextBox3.Text + $NL}
+    } 
+    else{$objTextBox3.Text = $NL + "Необходимо выбрать пользователя из выпадающего списка или набрать его вручную..." + $NL + $L + $objTextBox3.Text + $NL}
+
+    $GroupTest = $UName = $g = $Result = $null;
+}); #Проверить членство в выбранной группе
+
+$ButtonCheckNewAcc.Add_Click({ #Проверить новые аккаунты 
+     $DateStart = $DateTimePicker.value.Date;
+     $DateEnd = ($DateTimePicker1.Value.Date).AddDays(1);
+     $NewAcc = Get-ADUser   -Properties AccountExpirationDate, Name, SamAccountName, WhenCreated, Company, Department, Title, ExtensionAttribute1, CanonicalName`
+                            -Filter {((WhenCreated -ge $DateStart) -and (WhenCreated -le $DateEnd))} |
+                            Select-Object Name, SamAccountName, WhenCreated, Company, Department, Title, ExtensionAttribute1, CanonicalName |
+                            Sort-Object WhenCreated;
+
+     $NewAcc | Out-GridView;
+     $NewAcc = $NewAcc | Sort-Object CanonicalName;
+     $i=1;
+     Foreach ($Acc in $NewAcc){$NewUsers = $NewUsers + "$i)   " + $Acc.CanonicalName + $NL; $i++}
+     $objTextBox3.Text = $NL + "Всего за период с " + $DateStart + " по " + $DateEnd + " было создано " + $NewAcc.count + " акканта(ов):" + $NL + $NewUsers + $NL + $L + $objTextBox3.Text + $NL;
+     
+     $DateStart = $DateEnd = $NewAcc = $NewUsers = $null;
+}); #Проверить новые аккаунты
+
+$ButtonCheckNewPc.Add_Click({ #Проверить новые компьютеры 
+     $DateStart = $DateTimePicker.value.Date;
+     $DateEnd = ($DateTimePicker1.Value.Date).AddDays(1);
+     $NewPCs = Get-ADComputer   -Filter {((WhenCreated -ge $DateStart) -and (WhenCreated -le $DateEnd))}`
+                                -Properties WhenCreated, cn, ExtensionAttribute1,lastLogonDate, operatingSystem, CanonicalName |
+                                Select-Object WhenCreated, cn, ExtensionAttribute1,lastLogonDate, operatingSystem, CanonicalName |
+                                Sort-Object WhenCreated;
+
+     $NewPCs | Out-GridView:
+     $NewPCs = $NewPCs | Sort-Object CanonicalName;
+     $NewPCs = $NewPCs.CanonicalName;
+     $i=1;
+     Foreach ($Acc in $NewPCs){$NewUsers = $NewUsers + "$i)   " + $Acc + $NL; $i++}
+     $objTextBox3.Text = $NL + "Всего за период с "+$DateStart+" по "+$DateEnd+" было создано "+$NewAcc.count+" акканта(ов):" + $NL + $NewUsers + $NL + $L + $objTextBox3.Text + $NL;
+     $DateStart = $DateEnd = $NewAcc = $NewUsers = $null;
+}); #Проверить новые компьютеры
+
+$main_form.ShowDialog(); 
